@@ -1,6 +1,6 @@
 ---
-title: "EV Power - Lab 4 Project Report"
-format: typst
+title: "EV Power - Lab 4 Project Report Tim Roth"
+format: html
 ---
 
 # Example Solution 1
@@ -8,27 +8,161 @@ format: typst
 ## **Part 0: libraries**
 
 ```{r}
-
+library(tidyverse)
+library(janitor)
+library(ggplot2)
+library(sf)
+library(usmap)
+library(readr)
 ```
 
 ## **Part 1:** **Defining Research Question**
 
-Chosen Question:
+Chosen Question: Do states with higher renewable energy shares tend to have more electric vehicle registrations?
 
 ## **Part 2: Data Preparation and Cleaning**
 
 ```{r}
+renew21 <- read_csv("data/renew-use-2021.csv") |> clean_names()
+renew22 <- read_csv("data/renew-use-2022.csv") |> clean_names()
+renew23 <- read_csv("data/renew-use-2023.csv") |> clean_names()
 
+total21 <- read_csv("data/total-use-2021.csv") |> clean_names()
+total22 <- read_csv("data/total-use-2022.csv") |> clean_names()
+total23 <- read_csv("data/total-use-2023.csv") |> clean_names()
+
+# --- Combine renewable energy data ---
+renew_all <-
+  bind_rows(
+    renew21 |> rename(renew_use = renewable_use_2021) |> mutate(year = 2021),
+    renew22 |> rename(renew_use = renewable_use_2022) |> mutate(year = 2022),
+    renew23 |> rename(renew_use = renewable_use_2023) |> mutate(year = 2023)
+  ) |>
+  mutate(
+    state = str_to_upper(state),
+    renew_use = parse_number(renew_use)
+  )
+
+# --- Combine and pivot total energy data ---
+total_all <-
+  bind_rows(
+    total21 |> mutate(year = 2021),
+    total22 |> mutate(year = 2022),
+    total23 |> mutate(year = 2023)
+  ) |>
+  clean_names() |>
+  pivot_longer(
+    cols = !c(energy_source, year),
+    names_to = "state",
+    values_to = "total_use"
+  ) |>
+  mutate(
+    state = str_to_upper(state),
+    total_use = as.numeric(total_use)
+  )
+
+# --- Standardize total energy source names ---
+total_all <- total_all |>
+  mutate(
+    energy_source = case_when(
+      energy_source %in% c("total_renewables", "total renewable-energy") ~ "total_renewable_energy",
+      TRUE ~ energy_source
+    )
+  )
+
+renew_all |> head()
+total_all |> head()
+ev_2023  |> head()
 ```
 
 ## **Part 3: Joining / Pivoting Datasets for Analysis**
 
 ```{r}
+renew_state_totals <-
+  total_all |>
+  filter(energy_source == "total_renewable_energy") |>
+  group_by(state, year) |>
+  summarise(
+    renew_use = sum(total_use, na.rm = TRUE)
+  )
 
+total_state_totals <-
+  total_all |>
+  filter(!energy_source %in% c("total_renewable_energy")) |>
+  group_by(state, year) |>
+  summarise(
+    total_use = sum(total_use, na.rm = TRUE)
+  )
+
+energy_share <-
+  renew_state_totals |>
+  inner_join(total_state_totals, by = c("state", "year")) |>
+  mutate(renew_share = (renew_use / total_use) * 100)
+
+energy_2023 <-
+  energy_share |>
+  filter(year == 2023) |>
+  select(state, renew_share)
+
+ev_2023 <-
+  ev_2023 |>
+  filter(state != "State", !is.na(state)) |>
+  mutate(
+    state = str_to_upper(state),
+    ev_registrations = as.numeric(ev_registrations)
+  )
+
+state_lookup <- tibble(state_abbrev = state.abb, state_full = state.name)
+
+energy_2023 <- energy_2023 |>
+  rename(state_abbrev = state) |>
+  left_join(state_lookup, by = "state_abbrev") |>
+  rename(state = state_full) |>
+  select(state, renew_share) |>
+  mutate(state = str_to_upper(state))
+
+ev_energy <- ev_2023 |> inner_join(energy_2023, by = "state")
+
+dim(energy_2023)
+dim(ev_energy)
+head(ev_energy)
 ```
 
 ## **Part 4: Mapping Visualization**
-
 ```{r}
+plot_usmap(data = ev_energy, values = "renew_share", color = "white") +
+  scale_fill_continuous(
+    low = "lightyellow", high = "darkgreen",
+    name = "Renewable Share (%)"
+  ) +
+  labs(title = "Renewable Energy Share by State (2023)") +
+  theme(legend.position = "right")
 
+plot_usmap(data = ev_energy, values = "ev_registrations", color = "white") +
+  scale_fill_continuous(
+    low = "lightblue", high = "darkblue",
+    name = "EV Registrations"
+  ) +
+  labs(title = "EV Registrations by State (2023)") +
+  theme(legend.position = "right")
+
+ggplot(ev_energy, aes(x = renew_share, y = ev_registrations)) +
+  geom_point(color = "steelblue", size = 2.5, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE, color = "firebrick", linewidth = 1) +
+  scale_y_continuous(limits = c(0, 400000), labels = scales::comma) +
+  labs(
+    title = "EV Adoption vs Renewable Energy Share (2023)",
+    subtitle = "Capped at 400,000 EVs — California excluded visually for clarity",
+    x = "Renewable Share (%)",
+    y = "EV Registrations"
+  ) +
+  theme_minimal(base_size = 13)
 ```
+
+
+## **Part 5: Analysis**
+The first map shows that renewable energy production in 2023 was geographically concentrated in the Pacific Northwest, Midwest, and parts of New England. States such as Vermont, Maine, and Iowa derived over a third of their total energy from renewable sources, while much of the Southeast and Gulf Coast remained below 10 percent.
+
+By contrast, the second map of EV registrations highlights a distinctly different pattern. Electric vehicle adoption was heavily concentrated along the West Coast, especially in California, and in a few densely populated eastern states such as Florida and New York. These regions stand out despite not necessarily having the highest renewable energy shares, indicating that consumer incentives, infrastructure, and income levels play a stronger role in EV uptake than local generation mix.
+
+The scatterplot compares these two dimensions directly. Once California’s outlier effect is visually capped, the trendline reveals a weak or even slightly negative relationship between renewable energy share and EV registrations. In other words, states leading in renewable energy generation are not the same states leading in EV adoption. This divergence suggests that the transition to cleaner energy in the U.S. is occurring along two parallel—but not yet coordinated—pathways: grid decarbonization in some regions and transportation electrification in others.
